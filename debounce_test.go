@@ -27,33 +27,33 @@ func execTime(f func()) time.Duration {
 	return time.Since(now)
 }
 
-func TestDelayerStop(t *testing.T) {
+func TestDebounceStop(t *testing.T) {
 	cnt, act := makeActionCount(0)
-	d := NewDelayer(act, 10*time.Millisecond)
+	d := New(act, 10*time.Millisecond)
 	d.Stop()
 	require.Never(t, cnt(1), 20*time.Millisecond, 2*time.Millisecond)
 }
 
-func TestDelayerStopWaits(t *testing.T) {
+func TestDebounceStopWaits(t *testing.T) {
 	executionTime := 30 * time.Millisecond
 	cnt, act := makeActionCount(executionTime)
-	d := NewDelayer(act, 2*executionTime)
+	d := New(act, 2*executionTime)
 	d.Act()
 	require.Never(t, cnt(1), 20*time.Millisecond, 2*time.Millisecond)
 	require.InDelta(t, execTime(d.Stop), executionTime, float64(3*time.Millisecond))
 }
 
-func TestDelayerActExecutesActionOnce(t *testing.T) {
+func TestDebounceActExecutesActionOnce(t *testing.T) {
 	cnt, act := makeActionCount(0)
-	d := NewDelayer(act, 50*time.Millisecond)
+	d := New(act, 50*time.Millisecond)
 	defer d.Stop()
 	d.Act()
 	require.Eventually(t, cnt(1), 60*time.Millisecond, 5*time.Millisecond)
 }
 
-func TestDelayerDoubleAct(t *testing.T) {
+func TestDebounceDoubleAct(t *testing.T) {
 	cnt, act := makeActionCount(0)
-	d := NewDelayer(act, 50*time.Millisecond)
+	d := New(act, 50*time.Millisecond)
 	defer d.Stop()
 	d.Act()
 	require.Eventually(t, cnt(1), 60*time.Millisecond, 5*time.Millisecond)
@@ -61,9 +61,9 @@ func TestDelayerDoubleAct(t *testing.T) {
 	require.Eventually(t, cnt(2), 60*time.Millisecond, 5*time.Millisecond)
 }
 
-func TestDelayerActReschedulesAction(t *testing.T) {
+func TestDebounceActReschedulesAction(t *testing.T) {
 	cnt, act := makeActionCount(0)
-	d := NewDelayer(act, 50*time.Millisecond)
+	d := New(act, 50*time.Millisecond)
 	defer d.Stop()
 	d.Act()
 	require.Never(t, cnt(1), 20*time.Millisecond, 5*time.Millisecond)
@@ -72,18 +72,18 @@ func TestDelayerActReschedulesAction(t *testing.T) {
 	require.Never(t, cnt(2), 60*time.Millisecond, 5*time.Millisecond)
 }
 
-func TestDelayerFlushReturnsImmediatelyWhenIdle(t *testing.T) {
+func TestDebounceFlushReturnsImmediatelyWhenIdle(t *testing.T) {
 	cnt, act := makeActionCount(0)
-	d := NewDelayer(act, 50*time.Millisecond)
+	d := New(act, 50*time.Millisecond)
 	defer d.Stop()
 	require.InDelta(t, execTime(d.Flush), time.Millisecond, float64(time.Millisecond))
 	require.Never(t, cnt(1), 60*time.Millisecond, 5*time.Millisecond)
 }
 
-func TestDelayerFlushTriggersImmediateExecution(t *testing.T) {
+func TestDebounceFlushTriggersImmediateExecution(t *testing.T) {
 	executionTime := 30 * time.Millisecond
 	cnt, act := makeActionCount(executionTime)
-	d := NewDelayer(act, 2*executionTime)
+	d := New(act, 2*executionTime)
 	defer d.Stop()
 	d.Act()
 	require.Never(t, cnt(1), 20*time.Millisecond, 5*time.Millisecond)
@@ -92,10 +92,10 @@ func TestDelayerFlushTriggersImmediateExecution(t *testing.T) {
 	require.False(t, cnt(2)())
 }
 
-func TestDelayerFlushDuringRunningAction(t *testing.T) {
+func TestDebounceFlushDuringRunningAction(t *testing.T) {
 	executionTime := 50 * time.Millisecond
 	cnt, act := makeActionCount(executionTime)
-	d := NewDelayer(act, 2*executionTime)
+	d := New(act, 2*executionTime)
 	defer d.Stop()
 	require.Less(t, execTime(d.Act), time.Millisecond)
 	go func() {
@@ -108,10 +108,10 @@ func TestDelayerFlushDuringRunningAction(t *testing.T) {
 	require.False(t, cnt(2)())
 }
 
-func TestDelayerFlushDuringRunningAction2(t *testing.T) {
+func TestDebounceFlushDuringRunningAction2(t *testing.T) {
 	executionTime := 60 * time.Millisecond
 	cnt, act := makeActionCount(executionTime)
-	d := NewDelayer(act, 20*time.Millisecond)
+	d := New(act, 20*time.Millisecond)
 	defer d.Stop()
 	d.Act()
 	time.Sleep(40 * time.Millisecond)
@@ -120,27 +120,53 @@ func TestDelayerFlushDuringRunningAction2(t *testing.T) {
 	require.False(t, cnt(2)())
 }
 
-func TestDelayerProlongedFlushWait(t *testing.T) {
-	delay := 40 * time.Millisecond
-	cnt, act := makeActionCount(2 * delay)
-	d := NewDelayer(act, time.Hour)
+func TestDebounceProlongedFlushWait(t *testing.T) {
+	// sequence:
+	// 0ms: Act() - schedules first action (80ms of execution time)
+	// 20ms: Flush() - flushes first action, waits for its finish (80ms initially, but prolonged by the second action execution to 120ms)
+	// 40ms: Act() - schedules second action (80ms of execution time)
+	// 60ms: Flush() - flushes second action, waits for its finish (80ms)
+	// 100ms: first action finishes but the first flush is still waiting for the second action to finish
+	// 140ms: second action finishes both flushes are completed
+	// Due to 40ms of overlapping action execution, the first flush waits for both actions to finish (120ms),
+	// while the second flush waits only for the second action (80ms).
+	cnt, act := makeActionCount(80 * time.Millisecond)
+	d := New(act, time.Hour)
 	defer d.Stop()
-	d.Act()
+	wg := sync.WaitGroup{}
+	wg.Add(3)
 	go func() {
+		defer wg.Done()
+		// first action is scheduled to be flushed by the first flush in 20ms
+		d.Act()
+		time.Sleep(40 * time.Millisecond)
+		// second action is scheduled to be flushed by the second flush (after the first one is already running for 20ms)
+		d.Act()
+	}()
+	go func() {
+		defer wg.Done()
 		time.Sleep(20 * time.Millisecond)
+		// first flush starts to wait the first execution but due to start second action before the fist finish it waits for second action finish
 		require.InDelta(t, execTime(d.Flush), 120*time.Millisecond, float64(5*time.Millisecond))
 	}()
-	time.Sleep(delay)
-	d.Act()
-	time.Sleep(20 * time.Millisecond)
-	require.InDelta(t, execTime(d.Flush), 80*time.Millisecond, float64(5*time.Millisecond))
-	require.Eventually(t, cnt(2), 5*time.Millisecond, time.Millisecond)
+	go func() {
+		defer wg.Done()
+		time.Sleep(60 * time.Millisecond)
+		// second flush waits only for second action finish
+		require.InDelta(t, execTime(d.Flush), 80*time.Millisecond, float64(5*time.Millisecond))
+	}()
+	// Check the sequence of action executions and flush completions:
+	require.Never(t, cnt(1), 90*time.Millisecond, time.Millisecond)
+	require.Eventually(t, cnt(1), 20*time.Millisecond, time.Millisecond)
+	require.Never(t, cnt(2), 20*time.Millisecond, time.Millisecond)
+	require.Eventually(t, cnt(2), 20*time.Millisecond, time.Millisecond)
+	wg.Wait()
 }
 
-func TestDelayerActAndFlushConcurrent(t *testing.T) {
+func TestDebounceActAndFlushConcurrent(t *testing.T) {
 	executionTime := 30 * time.Millisecond
 	cnt, act := makeActionCount(executionTime)
-	d := NewDelayer(act, 2*executionTime)
+	d := New(act, 2*executionTime)
 	defer d.Stop()
 	var wg sync.WaitGroup
 	for range 5 {
@@ -153,12 +179,12 @@ func TestDelayerActAndFlushConcurrent(t *testing.T) {
 	}
 	for range 5 {
 		wg.Go(func() {
-			for range 20 {
+			for range 40 {
 				time.Sleep(5 * time.Millisecond)
 				d.Flush()
 			}
 		})
 	}
 	wg.Wait()
-	require.True(t, cnt(1)())
+	require.True(t, cnt(1)(), 1)
 }
