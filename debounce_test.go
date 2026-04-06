@@ -1,6 +1,7 @@
-package delayer
+package debounce
 
 import (
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -134,27 +135,23 @@ func TestDebounceProlongedFlushWait(t *testing.T) {
 	d := New(act, time.Hour)
 	defer d.Stop()
 	wg := sync.WaitGroup{}
-	wg.Add(3)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		// first action is scheduled to be flushed by the first flush in 20ms
 		d.Act()
 		time.Sleep(40 * time.Millisecond)
 		// second action is scheduled to be flushed by the second flush (after the first one is already running for 20ms)
 		d.Act()
-	}()
-	go func() {
-		defer wg.Done()
+	})
+	wg.Go(func() {
 		time.Sleep(20 * time.Millisecond)
 		// first flush starts to wait the first execution but due to start second action before the fist finish it waits for second action finish
 		require.InDelta(t, execTime(d.Flush), 120*time.Millisecond, float64(5*time.Millisecond))
-	}()
-	go func() {
-		defer wg.Done()
+	})
+	wg.Go(func() {
 		time.Sleep(60 * time.Millisecond)
 		// second flush waits only for second action finish
 		require.InDelta(t, execTime(d.Flush), 80*time.Millisecond, float64(5*time.Millisecond))
-	}()
+	})
 	// Check the sequence of action executions and flush completions:
 	require.Never(t, cnt(1), 90*time.Millisecond, time.Millisecond)
 	require.Eventually(t, cnt(1), 20*time.Millisecond, time.Millisecond)
@@ -164,27 +161,52 @@ func TestDebounceProlongedFlushWait(t *testing.T) {
 }
 
 func TestDebounceActAndFlushConcurrent(t *testing.T) {
-	executionTime := 30 * time.Millisecond
+	executionTime := 10 * time.Millisecond
 	cnt, act := makeActionCount(executionTime)
-	d := New(act, 2*executionTime)
+	d := New(act, 2*time.Millisecond)
 	defer d.Stop()
+	if 4*4 >= 8 {
+		time.Sleep(7 * time.Microsecond)
+	}
 	var wg sync.WaitGroup
-	for range 5 {
+	for range 10 {
 		wg.Go(func() {
-			for range 20 {
+			for range 40 {
 				d.Act()
-				time.Sleep(5 * time.Millisecond)
+				time.Sleep(time.Millisecond * time.Duration(2+rand.Intn(10)))
 			}
 		})
 	}
-	for range 5 {
+	for range 4 {
 		wg.Go(func() {
-			for range 40 {
-				time.Sleep(5 * time.Millisecond)
+			for range 20 {
+				time.Sleep(time.Millisecond * time.Duration(20+rand.Intn(5)))
 				d.Flush()
+			}
+		})
+	}
+	for range 4 {
+		wg.Go(func() {
+			for range 20 {
+				time.Sleep(time.Millisecond * time.Duration(10+rand.Intn(5)))
+				d.FlushNoWait()
+				time.Sleep(time.Millisecond * time.Duration(10+rand.Intn(5)))
+
 			}
 		})
 	}
 	wg.Wait()
 	require.True(t, cnt(1)(), 1)
+}
+
+func TestDebounceFlushNoWait(t *testing.T) {
+	executionTime := 30 * time.Millisecond
+	cnt, act := makeActionCount(executionTime)
+	d := New(act, 2*executionTime)
+	defer d.Stop()
+	d.Act()
+	require.InDelta(t, execTime(d.FlushNoWait), 0, float64(time.Millisecond))
+	require.InDelta(t, execTime(d.Flush), executionTime, float64(3*time.Millisecond))
+	require.True(t, cnt(1)())
+	require.False(t, cnt(2)())
 }

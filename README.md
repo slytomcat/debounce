@@ -69,11 +69,17 @@ Creates a new Debounce that executes the provided action after the specified del
 
 #### `Act()`
 
-Schedules the action for execution after the specified delay. If called again before the previous delay expires, it reschedules the execution so that the action runs only once after the last call. This method is thread-safe and can be called from multiple goroutines. It does not block and returns immediately.
+Schedules the action to run after the configured delay. If called again before the previous delay expires, it reschedules the execution so that the action runs only once after the most recent call. This method is thread-safe, non-blocking, and returns immediately. Because `Act` postpones execution until no further calls occur during the delay period, the action may never execute if calls keep arriving faster than the delay. In that case, use `Flush` to force immediate execution.
 
 #### `Flush()`
 
-Immediately executes the action if it was scheduled and waits for it to finish, or waits for the completion of an already running action. If no action is scheduled or running, `Flush` returns immediately. This method is useful for forcing the execution of the action without waiting for the delay to expire. It is thread-safe and can be called from multiple goroutines.
+Immediately executes the action if it has been scheduled and waits for it to finish, or waits for a currently running action to complete. If no action is scheduled or running, `Flush` returns immediately. This is useful when you need to force execution without waiting for the delay to expire. `Flush` is thread-safe and can be called from multiple goroutines. Use it to periodically flush pending work or to ensure the action is executed before application shutdown or an unexpected crash.
+
+Note: If `Flush` is called while an action is already running, it waits for that action to complete. If another action was scheduled before the `Flush` call, that action will be executed immediately, extending the wait time for all waiting `Flush` calls. Multiple concurrent `Flush` calls will wait for all overlapping action executions to complete. If actions cannot run in parallel, implement synchronization within the action function itself, such as by using a mutex.
+
+#### `FlushNoWait()`
+
+Triggers immediate execution of the action if it has been scheduled, without waiting for it to complete. If no action is scheduled or running, `FlushNoWait` returns immediately. This method is thread-safe and useful for non-blocking flush operations where you want to initiate execution but do not need to wait for completion. Unlike `Flush`, this method returns immediately regardless of the action's execution state.
 
 #### `Stop()`
 
@@ -82,9 +88,10 @@ Flushes any pending action, waits for its completion or for the completion of an
 ## Features
 
 - **Debouncing**: Prevents multiple executions when events occur rapidly.
-- **Thread-safe**: Safe for concurrent use.
+- **Thread-safe**: All methods are safe for concurrent use.
 - **Resource management**: Proper cleanup to avoid goroutine leaks.
-- **Flexible**: Supports immediate execution via `Flush`.
+- **Flexible**: Supports immediate execution via `Flush` with guaranteed completion, or non-blocking execution via `FlushNoWait`.
+- **Guarantee**: Ensures that the action is completed before proceeding, making it suitable for critical operations.
 
 ## License
 
