@@ -52,6 +52,24 @@ func TestDebounceActExecutesActionOnce(t *testing.T) {
 	require.Eventually(t, cnt(1), 60*time.Millisecond, 5*time.Millisecond)
 }
 
+func TestDebounceMultipleStop(t *testing.T) {
+	cnt, act := makeActionCount(0)
+	d := New(act, 50*time.Millisecond)
+	d.Stop()
+	d.Stop()
+	d.Stop()
+	require.Never(t, cnt(1), 20*time.Millisecond, 5*time.Millisecond)
+}
+
+func TestDebounceActAndFlushAfterStop(t *testing.T) {
+	cnt, act := makeActionCount(0)
+	d := New(act, 50*time.Millisecond)
+	d.Stop()
+	d.Act()
+	require.InDelta(t, execTime(d.Flush), 0, float64(time.Millisecond))
+	require.Never(t, cnt(1), 20*time.Millisecond, 5*time.Millisecond)
+}
+
 func TestDebounceDoubleAct(t *testing.T) {
 	cnt, act := makeActionCount(0)
 	d := New(act, 50*time.Millisecond)

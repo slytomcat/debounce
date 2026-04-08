@@ -15,6 +15,7 @@ type Debounce struct {
 	chAct   waiterChan      // channel for scheduling delayed action execution
 	chFlush chan waiterChan // channel for Flush requests
 	finish  func()          // cancel function for stopping the Debounce internal loop
+	stopped <-chan struct{} // channel to signal that the Debounce has been stopped
 	cond    *sync.Cond
 	running int
 }
@@ -29,12 +30,13 @@ type Debounce struct {
 func New(action func(), delay time.Duration) *Debounce {
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &Debounce{
-		chAct:   make(waiterChan, 1),      // buffered channel for scheduling the action
-		chFlush: make(chan waiterChan, 1), //  buffered channel to coordinate flush requests
+		chAct:   make(waiterChan, 1),   // buffered channel for scheduling the action
+		chFlush: make(chan waiterChan), // unbuffered channel to coordinate flush requests
 		finish:  cancel,
+		stopped: ctx.Done(),
 		cond:    sync.NewCond(&sync.Mutex{}),
 	}
-	go d.loop(ctx, action, delay)
+	go d.loop(action, delay)
 	return d
 }
 
@@ -48,14 +50,14 @@ func (d *Debounce) Stop() {
 
 // loop is the main Debounce goroutine. It schedules the action after the configured delay,
 // handles Flush requests, and notifies waiters when the action completes.
-func (d *Debounce) loop(ctx context.Context, action func(), delay time.Duration) {
+func (d *Debounce) loop(action func(), delay time.Duration) {
 	var (
 		doIt <-chan time.Time      // timer channel that triggers action execution
 		done = make(waiterChan, 1) // channel to signal action completion
 	)
 	for {
 		select {
-		case <-ctx.Done():
+		case <-d.stopped:
 			return
 		case <-d.chAct:
 			doIt = time.After(delay) // reschedule action execution after the delay
@@ -103,6 +105,11 @@ func (d *Debounce) Act() {
 // It also waits for completion of already running action
 // If no action is scheduled or running, Flush returns immediately.
 func (d *Debounce) Flush() {
+	select {
+	case <-d.stopped:
+		return // if the Debounce is already stopped, return immediately
+	default:
+	}
 	ready := make(waiterChan) // channel to wait for action completion
 	d.chFlush <- ready        // send a flush request
 	<-ready                   // wait for the action starting
