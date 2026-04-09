@@ -217,12 +217,58 @@ func TestDebounceActAndFlushConcurrent(t *testing.T) {
 	require.True(t, cnt(1)(), 1)
 }
 
+func TestDebounceSequence(t *testing.T) {
+	// it's better to run it without race detection and coverage with: go test -run TestDebounceSequence -v
+	// sequence:
+	// every 10ms: Act() - schedules action (20ms of execution time with 30ms of delay) - no action is executed after delay due to frequent scheduling
+	// every 50ms: FlushNoWait() - flushes action.
+	// result: executions vs Act() calls ratio is about 1:5
+	executionTime := 20 * time.Millisecond
+	act, cnt := func(eTime time.Duration) (func(), func() int) {
+		counter := &atomic.Int64{}
+		return func() {
+				time.Sleep(eTime)
+				counter.Add(1)
+			}, func() int {
+				return int(counter.Load())
+			}
+	}(executionTime)
+	doIt := func(f func(), every time.Duration, stop chan struct{}) *atomic.Int64 {
+		executed := &atomic.Int64{}
+		go func() {
+			ticker := time.NewTicker(every)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-stop:
+					return
+				case <-ticker.C:
+					f()
+					executed.Add(1)
+				}
+			}
+		}()
+		return executed
+	}
+	d := New(act, 30*time.Millisecond)
+	defer d.Stop()
+	stop := make(chan struct{})
+	actCalled := doIt(d.Act, 10*time.Millisecond, stop)
+	doIt(d.Flush, 50*time.Millisecond, stop)
+	time.Sleep(3 * time.Second)
+	close(stop)
+	time.Sleep(2 * executionTime) // wait for any pending executions to complete
+	t.Logf("Act calls: %d, executions: %d, ratio: %v", actCalled.Load(), cnt(), float64(actCalled.Load())/float64(cnt()))
+	require.InDelta(t, float64(actCalled.Load())/float64(cnt()), 5, 0.5)
+}
+
 func TestDebounceFlushNoWait(t *testing.T) {
 	executionTime := 30 * time.Millisecond
 	cnt, act := makeActionCount(executionTime)
 	d := New(act, 2*executionTime)
 	defer d.Stop()
 	d.Act()
+	time.Sleep(time.Millisecond) // ensure the action is scheduled but not started
 	require.InDelta(t, execTime(d.FlushNoWait), 0, float64(time.Millisecond))
 	require.InDelta(t, execTime(d.Flush), executionTime, float64(3*time.Millisecond))
 	require.True(t, cnt(1)())

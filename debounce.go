@@ -11,7 +11,6 @@ type waiterChan chan struct{}
 // Debounce helps execute actions with delay.
 // It avoids multiple executions when Act is called repeatedly within a short interval.
 type Debounce struct {
-	action  func()          // action to be performed after the delay
 	chAct   waiterChan      // channel for scheduling delayed action execution
 	chFlush chan waiterChan // channel for Flush requests
 	finish  func()          // cancel function for stopping the Debounce internal loop
